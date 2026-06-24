@@ -46,6 +46,16 @@ export function Home() {
       <main className="flex-1 w-full flex flex-col items-center">
         {/* Hero Section */}
         <section className="w-full max-w-4xl mx-auto px-4 pt-24 pb-12 flex flex-col items-center text-center">
+          <a
+            href="https://x.com/hi_vecna"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 mb-6 px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20 text-primary text-sm font-semibold hover:bg-primary/20 transition-colors"
+          >
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 fill-current" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.253 5.622zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+            Developed by @hi_vecna
+          </a>
+
           <h1 className="text-5xl md:text-6xl font-extrabold tracking-tight mb-4">
             <span className="text-foreground">Arc</span>{" "}
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-purple-400">
