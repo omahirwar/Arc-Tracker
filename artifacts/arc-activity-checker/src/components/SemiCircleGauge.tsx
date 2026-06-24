@@ -4,92 +4,70 @@ interface SemiCircleGaugeProps {
   value: number | null;
   size?: number;
   strokeWidth?: number;
-  className?: string;
 }
 
-export function SemiCircleGauge({
-  value,
-  size = 200,
-  strokeWidth = 18,
-  className = "",
-}: SemiCircleGaugeProps) {
-  const safeValue = value === null ? 0 : Math.min(Math.max(value, 0), 100);
+export function SemiCircleGauge({ value, size = 200, strokeWidth = 20 }: SemiCircleGaugeProps) {
+  const score = Math.min(Math.max(value ?? 0, 0), 100);
+
   const cx = size / 2;
-  const cy = size / 2;
-  const radius = (size - strokeWidth * 2) / 2;
+  const r = size / 2 - strokeWidth;
+  // Circle center is at (cx, cy). The arch goes from (cx-r, cy) → top → (cx+r, cy)
+  const cy = r + strokeWidth;
 
-  // Semi-circle goes from 180° (left) to 0° (right), i.e. the top arc
-  // In SVG angles: start at left (π), sweep to right (0) going counter-clockwise
-  const startAngle = Math.PI;       // left endpoint
-  const endAngle = 0;               // right endpoint
-  const totalAngle = Math.PI;       // full sweep = 180°
+  // Left and right endpoints of the arch
+  const x1 = cx - r;
+  const x2 = cx + r;
 
-  const polarToCartesian = (angle: number) => ({
-    x: cx + radius * Math.cos(angle),
-    y: cy + radius * Math.sin(angle),
-  });
+  // Top arch: from LEFT to RIGHT going COUNTER-CLOCKWISE (upward) — sweep-flag = 0
+  const archPath = `M ${x1},${cy} A ${r},${r} 0 0,0 ${x2},${cy}`;
 
-  // Full background arc (gray track): left → right
-  const bgStart = polarToCartesian(startAngle);
-  const bgEnd = polarToCartesian(endAngle);
-  const bgPath = `M ${bgStart.x} ${bgStart.y} A ${radius} ${radius} 0 0 1 ${bgEnd.x} ${bgEnd.y}`;
+  // Total arc length of a semicircle
+  const arcLength = Math.PI * r;
 
-  // Filled arc: left → (score%) → right
-  const fillAngle = startAngle - (safeValue / 100) * totalAngle;
-  const fillEnd = polarToCartesian(fillAngle);
-  const largeArc = safeValue > 50 ? 1 : 0;
-  const fillPath =
-    safeValue === 0
-      ? ""
-      : safeValue === 100
-      ? bgPath
-      : `M ${bgStart.x} ${bgStart.y} A ${radius} ${radius} 0 ${largeArc} 1 ${fillEnd.x} ${fillEnd.y}`;
+  // Gradient ID (unique per size to avoid conflicts)
+  const gid = `score-grad-${size}`;
 
-  // Gradient color stops: red → orange → gold/yellow
-  const gradientId = `gauge-gradient-${size}`;
+  // SVG height: enough to show the arch + stroke caps
+  const svgH = cy + strokeWidth / 2 + 2;
 
   return (
-    <div
-      className={`relative flex items-center justify-center ${className}`}
-      style={{ width: size, height: size / 2 + strokeWidth }}
+    <svg
+      width={size}
+      height={svgH}
+      viewBox={`0 0 ${size} ${svgH}`}
+      overflow="visible"
     >
-      <svg
-        width={size}
-        height={size / 2 + strokeWidth}
-        viewBox={`0 0 ${size} ${size / 2 + strokeWidth}`}
-        overflow="visible"
-      >
-        <defs>
-          {/* Left-to-right linear gradient: red → orange → gold */}
-          <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%"   stopColor="#ef4444" />
-            <stop offset="40%"  stopColor="#f97316" />
-            <stop offset="75%"  stopColor="#eab308" />
-            <stop offset="100%" stopColor="#84cc16" />
-          </linearGradient>
-        </defs>
+      <defs>
+        {/* Horizontal gradient: red (left/Low) → orange → yellow → green (right/High) */}
+        <linearGradient id={gid} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%"   stopColor="#ef4444" />
+          <stop offset="35%"  stopColor="#f97316" />
+          <stop offset="65%"  stopColor="#eab308" />
+          <stop offset="100%" stopColor="#22c55e" />
+        </linearGradient>
+      </defs>
 
-        {/* Gray background track */}
+      {/* Gray background track — full arch */}
+      <path
+        d={archPath}
+        fill="none"
+        stroke="#e5e7eb"
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+      />
+
+      {/* Colored fill — start from left, fill clockwise up to score% */}
+      {score > 0 && (
         <path
-          d={bgPath}
+          d={archPath}
           fill="none"
-          stroke="#e5e7eb"
+          stroke={`url(#${gid})`}
           strokeWidth={strokeWidth}
           strokeLinecap="round"
+          strokeDasharray={`${(score / 100) * arcLength} ${arcLength}`}
+          strokeDashoffset={0}
         />
-
-        {/* Colored filled arc */}
-        {safeValue > 0 && (
-          <path
-            d={fillPath}
-            fill="none"
-            stroke={`url(#${gradientId})`}
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            style={{ transition: "stroke-dasharray 1s ease-out" }}
-          />
-        )}
-      </svg>
-    </div>
+      )}
+    </svg>
   );
 }
