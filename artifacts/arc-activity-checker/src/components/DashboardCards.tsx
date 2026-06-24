@@ -70,14 +70,17 @@ export function DashboardCards({ activity, isLoading }: DashboardCardsProps) {
           </div>
           
           {activity.arcScore !== null && activity.arcScore !== undefined ? (
-            <div className="flex flex-col items-center">
-              <SemiCircleGauge value={activity.arcScore} size={200} />
-              <div className="mt-[-20px] text-center">
-                <div className="text-3xl font-bold text-foreground">{activity.arcScore}<span className="text-lg text-muted-foreground font-normal">/100</span></div>
-                <div className="text-xs text-muted-foreground mt-1 uppercase tracking-wider font-semibold">Activity Score</div>
+            <div className="flex flex-col items-center w-full">
+              <div className="relative w-full flex justify-center">
+                <SemiCircleGauge value={activity.arcScore} size={190} strokeWidth={18} />
+                {/* Score number overlaid at the bottom-center of the gauge */}
+                <div className="absolute bottom-0 text-center pointer-events-none">
+                  <div className="text-4xl font-extrabold text-primary leading-none">{activity.arcScore}</div>
+                  <div className="text-xs text-muted-foreground font-semibold tracking-widest uppercase mt-0.5">Arc Score</div>
+                </div>
               </div>
-              <div className="w-full flex justify-between px-6 mt-4 text-xs font-medium">
-                <span className="text-destructive">Low</span>
+              <div className="w-full flex justify-between px-4 mt-3 text-xs font-semibold">
+                <span className="text-red-500">Low</span>
                 <span className="text-green-500">High</span>
               </div>
             </div>
