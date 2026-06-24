@@ -81,13 +81,81 @@ export interface WalletActivityResult {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Blockscout v2 API types (ArcScan)
 // ---------------------------------------------------------------------------
 
-function formatDate(ts: number | string): string {
-  const d = typeof ts === "string" ? new Date(Number(ts) * 1000) : new Date(ts);
-  return d.toISOString();
+interface BscAddress {
+  hash: string;
+  is_contract?: boolean;
+  name?: string | null;
 }
+
+interface BscTx {
+  hash: string;
+  from: BscAddress;
+  to: BscAddress | null;
+  timestamp: string;
+  status: string;
+  raw_input: string;
+  block_number: number;
+  type?: string;
+  token_transfers?: BscTokenTransfer[];
+}
+
+interface BscToken {
+  address: string;
+  name: string | null;
+  symbol: string | null;
+  type: string;
+}
+
+interface BscTokenTransfer {
+  transaction_hash: string;
+  from: BscAddress;
+  to: BscAddress;
+  timestamp: string;
+  token: BscToken;
+  total?: { token_id?: string };
+}
+
+interface BscPage<T> {
+  items: T[];
+  next_page_params: Record<string, string> | null;
+}
+
+// ---------------------------------------------------------------------------
+// Blockscout v2 paginated fetch — fetches ALL pages
+// ---------------------------------------------------------------------------
+
+async function blockscoutFetchAll<T>(
+  baseUrl: string,
+  path: string,
+  maxItems = 1000
+): Promise<T[]> {
+  const results: T[] = [];
+  let url: string | null = `${baseUrl}${path}`;
+
+  while (url && results.length < maxItems) {
+    const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) {
+      throw new Error(`ArcScan API HTTP ${res.status}: ${url}`);
+    }
+    const json = (await res.json()) as BscPage<T>;
+    const items = json.items ?? [];
+    results.push(...items);
+
+    if (!json.next_page_params || Object.keys(json.next_page_params).length === 0) {
+      break;
+    }
+    const params = new URLSearchParams(json.next_page_params);
+    url = `${baseUrl}${path}?${params.toString()}`;
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function isoWeek(dateStr: string): string {
   const d = new Date(dateStr);
@@ -98,151 +166,85 @@ function isoWeek(dateStr: string): string {
   return `${d.getFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
-function classifyTx(
-  tx: Record<string, string>,
-  nftHashes: Set<string>,
-  tokenHashes: Set<string>
-): TransactionRecord["type"] {
-  if (nftHashes.has(tx.hash)) return "NFT Transfer";
-  if (tokenHashes.has(tx.hash)) return "Token Transfer";
-  if (tx.input && tx.input !== "0x" && tx.input.length > 2) return "Contract Interaction";
+function classifyBscTx(tx: BscTx, address: string): TransactionRecord["type"] {
+  const toAddr = tx.to?.hash?.toLowerCase() ?? "";
+  const fromAddr = tx.from?.hash?.toLowerCase() ?? "";
+  const addrLower = address.toLowerCase();
+
+  // Check for NFT token transfers in the tx
+  const nftTransfer = tx.token_transfers?.find(
+    (t) => t.token.type === "ERC-721" || t.token.type === "ERC-1155"
+  );
+  if (nftTransfer) return "NFT Transfer";
+
+  const tokenTransfer = tx.token_transfers?.find(
+    (t) => t.token.type === "ERC-20"
+  );
+  if (tokenTransfer) return "Token Transfer";
+
+  // Contract interaction: to is a contract and raw_input has data
+  if (
+    tx.to?.is_contract &&
+    tx.raw_input &&
+    tx.raw_input !== "0x" &&
+    tx.raw_input.length > 2
+  ) {
+    return "Contract Interaction";
+  }
+
+  if (!toAddr || toAddr === fromAddr) return "Unknown";
   return "Native Transfer";
 }
 
 // ---------------------------------------------------------------------------
-// Etherscan-compatible explorer API
-// ---------------------------------------------------------------------------
-
-interface EtherscanTx {
-  hash: string;
-  from: string;
-  to: string;
-  timeStamp: string;
-  isError: string;
-  input: string;
-  contractAddress: string;
-  blockNumber: string;
-}
-
-interface EtherscanTokenTx {
-  hash: string;
-  from: string;
-  to: string;
-  timeStamp: string;
-  contractAddress: string;
-  tokenName: string;
-}
-
-interface EtherscanNftTx {
-  hash: string;
-  from: string;
-  to: string;
-  timeStamp: string;
-  contractAddress: string;
-  tokenName: string;
-  tokenID: string;
-}
-
-interface EtherscanResponse<T> {
-  status: string;
-  message: string;
-  result: T[] | string;
-}
-
-async function etherscanFetch<T>(
-  apiUrl: string,
-  apiKey: string,
-  module: string,
-  action: string,
-  address: string
-): Promise<T[]> {
-  const url = new URL(`${apiUrl}/api`);
-  url.searchParams.set("module", module);
-  url.searchParams.set("action", action);
-  url.searchParams.set("address", address);
-  url.searchParams.set("startblock", "0");
-  url.searchParams.set("endblock", "99999999");
-  url.searchParams.set("sort", "asc");
-  if (apiKey) url.searchParams.set("apikey", apiKey);
-
-  const res = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} from explorer API`);
-  const json = (await res.json()) as EtherscanResponse<T>;
-  if (json.status !== "1" && json.message !== "OK") {
-    if (json.message === "No transactions found") return [];
-    if (typeof json.result === "string" && json.result.includes("No records")) return [];
-    logger.warn({ message: json.message }, "Explorer API returned non-1 status");
-    return [];
-  }
-  return Array.isArray(json.result) ? (json.result as T[]) : [];
-}
-
-// ---------------------------------------------------------------------------
-// Blockscout v2 API
-// ---------------------------------------------------------------------------
-
-interface BlockscoutTx {
-  hash: string;
-  from: { hash: string };
-  to: { hash: string } | null;
-  timestamp: string;
-  status: string;
-  raw_input: string;
-  block_number: number;
-}
-
-interface BlockscoutTokenTx {
-  transaction_hash: string;
-  from: { hash: string };
-  to: { hash: string };
-  timestamp: string;
-  token: { address: string; name: string; type: string };
-  total: { token_id?: string };
-}
-
-interface BlockscoutPage<T> {
-  items: T[];
-  next_page_params: unknown;
-}
-
-async function blockscoutFetch<T>(
-  apiUrl: string,
-  path: string
-): Promise<T[]> {
-  const results: T[] = [];
-  let url: string | null = `${apiUrl}${path}`;
-
-  while (url) {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status} from Blockscout API`);
-    const json = (await res.json()) as BlockscoutPage<T>;
-    results.push(...json.items);
-    // Pagination guard: max 500 items to avoid infinite loops
-    if (!json.next_page_params || results.length >= 500) break;
-    const params = new URLSearchParams(
-      Object.entries(json.next_page_params as Record<string, string>)
-    );
-    url = `${apiUrl}${path}?${params.toString()}`;
-  }
-  return results;
-}
-
-// ---------------------------------------------------------------------------
-// RPC-only fallback
+// RPC-only fallback (when no explorer API configured)
 // ---------------------------------------------------------------------------
 
 async function rpcFallback(
   rpcUrl: string,
   address: string
-): Promise<{ txCount: number; balance: string }> {
+): Promise<{ txCount: number }> {
   const client = createPublicClient({
     transport: http(rpcUrl, { timeout: 15000 }),
   });
-  const [txCount, balance] = await Promise.all([
-    client.getTransactionCount({ address: address as `0x${string}` }),
-    client.getBalance({ address: address as `0x${string}` }),
-  ]);
-  return { txCount, balance: balance.toString() };
+  const txCount = await client.getTransactionCount({
+    address: address as `0x${string}`,
+  });
+  return { txCount };
+}
+
+// ---------------------------------------------------------------------------
+// Empty result helper
+// ---------------------------------------------------------------------------
+
+function emptyResult(
+  address: string,
+  networkName: string,
+  dataMode: WalletActivityResult["dataMode"],
+  error: string | null
+): WalletActivityResult {
+  return {
+    address,
+    network: networkName,
+    dataMode,
+    totalTransactions: 0,
+    activeDays: 0,
+    uniqueContracts: 0,
+    firstActivity: null,
+    lastActivity: null,
+    projectsFound: 0,
+    totalTrackedProjects: ARC_PROTOCOLS.length,
+    arcScore: null,
+    scoreLabel: null,
+    scoreBreakdown: null,
+    scamReports: null,
+    transactions: [],
+    contracts: [],
+    protocols: [],
+    nfts: [],
+    weeklyActivity: [],
+    error,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -258,407 +260,323 @@ export async function fetchWalletActivity(
     });
   }
 
-  const networkName = env("ARC_NETWORK_NAME") ?? env("NEXT_PUBLIC_ARC_NETWORK_NAME") ?? "Arc Testnet";
-  const explorerApiUrl = env("ARC_EXPLORER_API_URL");
-  const explorerApiKey = env("ARC_EXPLORER_API_KEY") ?? "";
+  const networkName =
+    env("ARC_NETWORK_NAME") ?? env("NEXT_PUBLIC_ARC_NETWORK_NAME") ?? "Arc Testnet";
+  const explorerApiUrl = env("ARC_EXPLORER_API_URL"); // e.g. https://testnet.arcscan.app
   const rpcUrl = env("ARC_RPC_URL");
 
   if (!explorerApiUrl && !rpcUrl) {
-    return {
-      address,
-      network: networkName,
-      dataMode: "unavailable",
-      totalTransactions: 0,
-      activeDays: 0,
-      uniqueContracts: 0,
-      firstActivity: null,
-      lastActivity: null,
-      projectsFound: 0,
-      totalTrackedProjects: ARC_PROTOCOLS.length,
-      arcScore: null,
-      scoreLabel: null,
-      scoreBreakdown: null,
-      scamReports: null,
-      transactions: [],
-      contracts: [],
-      protocols: [],
-      nfts: [],
-      weeklyActivity: [],
-      error: "Arc data source is not configured yet.",
-    };
+    return emptyResult(address, networkName, "unavailable", "Arc data source is not configured yet.");
   }
 
-  let rawTxs: EtherscanTx[] = [];
-  let rawTokenTxs: EtherscanTokenTx[] = [];
-  let rawNftTxs: EtherscanNftTx[] = [];
-  let dataMode: "full" | "partial" = "full";
-  let fetchError: string | null = null;
+  const addrLower = address.toLowerCase();
 
-  // --- Try Etherscan-compatible API first ---
+  // -------------------------------------------------------------------------
+  // Blockscout v2 — ArcScan Testnet primary data source
+  // -------------------------------------------------------------------------
   if (explorerApiUrl) {
     try {
-      const [txs, tokenTxs, nftTxs] = await Promise.all([
-        etherscanFetch<EtherscanTx>(
-          explorerApiUrl, explorerApiKey, "account", "txlist", address
-        ).catch(async () => {
-          // Try Blockscout v2 instead
-          logger.info("Etherscan txlist failed, trying Blockscout v2");
+      const apiBase = `${explorerApiUrl}/api/v2`;
+
+      // Fetch transactions and token transfers in parallel
+      const [rawTxs, rawTokenTransfers] = await Promise.all([
+        blockscoutFetchAll<BscTx>(
+          apiBase,
+          `/addresses/${address}/transactions`
+        ).catch((err) => {
+          logger.warn({ err }, "ArcScan transactions fetch failed");
           return null;
         }),
-        etherscanFetch<EtherscanTokenTx>(
-          explorerApiUrl, explorerApiKey, "account", "tokentx", address
-        ).catch(() => [] as EtherscanTokenTx[]),
-        etherscanFetch<EtherscanNftTx>(
-          explorerApiUrl, explorerApiKey, "account", "tokennfttx", address
-        ).catch(() => [] as EtherscanNftTx[]),
+        blockscoutFetchAll<BscTokenTransfer>(
+          apiBase,
+          `/addresses/${address}/token-transfers`
+        ).catch((err) => {
+          logger.warn({ err }, "ArcScan token-transfers fetch failed");
+          return [] as BscTokenTransfer[];
+        }),
       ]);
 
-      if (txs === null) {
-        // Etherscan API failed — try Blockscout v2
-        throw new Error("Etherscan API failed, try Blockscout");
-      }
-
-      rawTxs = txs;
-      rawTokenTxs = tokenTxs;
-      rawNftTxs = nftTxs;
-    } catch {
-      // Try Blockscout v2
-      try {
-        const [bscTxs, bscTokenTxs] = await Promise.all([
-          blockscoutFetch<BlockscoutTx>(
-            explorerApiUrl,
-            `/api/v2/addresses/${address}/transactions`
-          ),
-          blockscoutFetch<BlockscoutTokenTx>(
-            explorerApiUrl,
-            `/api/v2/addresses/${address}/token-transfers`
-          ),
-        ]);
-
-        // Convert Blockscout format to Etherscan-like format
-        rawTxs = bscTxs.map((t) => ({
-          hash: t.hash,
-          from: t.from?.hash ?? address,
-          to: t.to?.hash ?? "",
-          timeStamp: String(Math.floor(new Date(t.timestamp).getTime() / 1000)),
-          isError: t.status === "error" ? "1" : "0",
-          input: t.raw_input ?? "0x",
-          contractAddress: "",
-          blockNumber: String(t.block_number),
-        }));
-
-        rawNftTxs = bscTokenTxs
-          .filter((t) => t.token.type === "ERC-721" || t.token.type === "ERC-1155")
-          .map((t) => ({
-            hash: t.transaction_hash,
-            from: t.from?.hash ?? address,
-            to: t.to?.hash ?? address,
-            timeStamp: String(Math.floor(new Date(t.timestamp).getTime() / 1000)),
-            contractAddress: t.token.address,
-            tokenName: t.token.name ?? "",
-            tokenID: t.total?.token_id ?? "",
-          }));
-
-        rawTokenTxs = bscTokenTxs
-          .filter((t) => t.token.type === "ERC-20")
-          .map((t) => ({
-            hash: t.transaction_hash,
-            from: t.from?.hash ?? address,
-            to: t.to?.hash ?? address,
-            timeStamp: String(Math.floor(new Date(t.timestamp).getTime() / 1000)),
-            contractAddress: t.token.address,
-            tokenName: t.token.name ?? "",
-          }));
-      } catch (blockscoutErr) {
-        logger.warn({ err: blockscoutErr }, "Both Etherscan and Blockscout APIs failed");
-        // Fall through to RPC if available
+      // If transactions fetch failed entirely, try RPC fallback
+      if (rawTxs === null) {
         if (rpcUrl) {
           try {
             const rpcData = await rpcFallback(rpcUrl, address);
-            dataMode = "partial";
-            fetchError = "Partial data available. Full wallet history could not be retrieved from the current data source.";
-            // With RPC only we can show tx count but not full history
-            return {
+            return emptyResult(
               address,
-              network: networkName,
-              dataMode: "partial",
-              totalTransactions: rpcData.txCount,
-              activeDays: 0,
-              uniqueContracts: 0,
-              firstActivity: null,
-              lastActivity: null,
-              projectsFound: 0,
-              totalTrackedProjects: ARC_PROTOCOLS.length,
-              arcScore: null,
-              scoreLabel: null,
-              scoreBreakdown: null,
-              scamReports: null,
-              transactions: [],
-              contracts: [],
-              protocols: [],
-              nfts: [],
-              weeklyActivity: [],
-              error: fetchError,
-            };
+              networkName,
+              "partial",
+              `Partial data available. Full wallet history could not be retrieved. Outgoing transaction count: ${rpcData.txCount}.`
+            );
           } catch {
-            return {
-              address,
-              network: networkName,
-              dataMode: "unavailable",
-              totalTransactions: 0,
-              activeDays: 0,
-              uniqueContracts: 0,
-              firstActivity: null,
-              lastActivity: null,
-              projectsFound: 0,
-              totalTrackedProjects: ARC_PROTOCOLS.length,
-              arcScore: null,
-              scoreLabel: null,
-              scoreBreakdown: null,
-              scamReports: null,
-              transactions: [],
-              contracts: [],
-              protocols: [],
-              nfts: [],
-              weeklyActivity: [],
-              error: "Unable to fetch Arc explorer data right now. Please try again later.",
-            };
+            /* fall through */
           }
         }
-        fetchError = "Unable to fetch Arc explorer data right now. Please try again later.";
-        dataMode = "partial";
+        return emptyResult(
+          address,
+          networkName,
+          "unavailable",
+          "Unable to fetch Arc explorer data right now. Please try again later."
+        );
       }
-    }
-  } else if (rpcUrl) {
-    // RPC only
-    try {
-      const rpcData = await rpcFallback(rpcUrl, address);
-      dataMode = "partial";
-      return {
-        address,
-        network: networkName,
-        dataMode: "partial",
-        totalTransactions: rpcData.txCount,
-        activeDays: 0,
-        uniqueContracts: 0,
-        firstActivity: null,
-        lastActivity: null,
-        projectsFound: 0,
-        totalTrackedProjects: ARC_PROTOCOLS.length,
-        arcScore: null,
-        scoreLabel: null,
-        scoreBreakdown: null,
-        scamReports: null,
-        transactions: [],
-        contracts: [],
-        protocols: [],
-        nfts: [],
-        weeklyActivity: [],
-        error: "Partial data available. Full wallet history could not be retrieved from the current data source.",
-      };
-    } catch {
-      return {
-        address,
-        network: networkName,
-        dataMode: "unavailable",
-        totalTransactions: 0,
-        activeDays: 0,
-        uniqueContracts: 0,
-        firstActivity: null,
-        lastActivity: null,
-        projectsFound: 0,
-        totalTrackedProjects: ARC_PROTOCOLS.length,
-        arcScore: null,
-        scoreLabel: null,
-        scoreBreakdown: null,
-        scamReports: null,
-        transactions: [],
-        contracts: [],
-        protocols: [],
-        nfts: [],
-        weeklyActivity: [],
-        error: "Unable to fetch Arc explorer data right now. Please try again later.",
-      };
-    }
-  }
 
-  // ---------------------------------------------------------------------------
-  // Process fetched data
-  // ---------------------------------------------------------------------------
+      // No transactions at all
+      if (rawTxs.length === 0) {
+        return {
+          ...emptyResult(address, networkName, "full", null),
+          arcScore: 0,
+          scoreLabel: "No Activity Found",
+        };
+      }
 
-  const nftHashes = new Set(rawNftTxs.map((t) => t.hash));
-  const tokenHashes = new Set(rawTokenTxs.map((t) => t.hash));
+      // -----------------------------------------------------------------------
+      // Build token / NFT lookup maps from token transfers
+      // -----------------------------------------------------------------------
+      const nftTransferMap = new Map<string, BscTokenTransfer[]>(); // txHash → transfers
+      const tokenTransferMap = new Map<string, BscTokenTransfer[]>();
 
-  // Build transactions list
-  const transactions: TransactionRecord[] = rawTxs.map((tx) => ({
-    hash: tx.hash,
-    type: classifyTx(tx as Record<string, string>, nftHashes, tokenHashes),
-    from: tx.from,
-    to: tx.to || null,
-    date: formatDate(tx.timeStamp),
-    status: tx.isError === "1" ? "failed" : "success",
-    blockNumber: tx.blockNumber,
-  }));
+      for (const t of rawTokenTransfers ?? []) {
+        const isNft = t.token.type === "ERC-721" || t.token.type === "ERC-1155";
+        const map = isNft ? nftTransferMap : tokenTransferMap;
+        const list = map.get(t.transaction_hash) ?? [];
+        list.push(t);
+        map.set(t.transaction_hash, list);
+      }
 
-  // Active days
-  const daySet = new Set<string>();
-  const weekSet = new Set<string>();
-  for (const tx of rawTxs) {
-    const d = new Date(Number(tx.timeStamp) * 1000);
-    daySet.add(d.toISOString().slice(0, 10));
-    weekSet.add(isoWeek(d.toISOString()));
-  }
+      // -----------------------------------------------------------------------
+      // Process transactions
+      // -----------------------------------------------------------------------
+      const transactions: TransactionRecord[] = rawTxs.map((tx) => ({
+        hash: tx.hash,
+        type: classifyBscTx(tx, address),
+        from: tx.from?.hash ?? address,
+        to: tx.to?.hash ?? null,
+        date: tx.timestamp,
+        status: tx.status === "ok" ? "success" : tx.status === "error" ? "failed" : "pending",
+        blockNumber: String(tx.block_number),
+      }));
 
-  // Unique contracts interacted with
-  const contractMap = new Map<string, { name: string | null; category: string | null; count: number; lastTs: number }>();
-  for (const tx of rawTxs) {
-    const target = tx.to || tx.contractAddress;
-    if (!target || target === address.toLowerCase()) continue;
-    if (tx.input === "0x" || tx.input === "") continue; // skip native transfers
-    const existing = contractMap.get(target.toLowerCase());
-    const ts = Number(tx.timeStamp);
-    if (existing) {
-      existing.count++;
-      if (ts > existing.lastTs) existing.lastTs = ts;
-    } else {
-      contractMap.set(target.toLowerCase(), { name: null, category: null, count: 1, lastTs: ts });
-    }
-  }
+      // Active days & weeks
+      const daySet = new Set<string>();
+      const weekSet = new Set<string>();
+      for (const tx of rawTxs) {
+        const d = tx.timestamp.slice(0, 10);
+        daySet.add(d);
+        weekSet.add(isoWeek(tx.timestamp));
+      }
 
-  const contracts: ContractRecord[] = Array.from(contractMap.entries()).map(
-    ([addr, info]) => ({
-      address: addr,
-      name: info.name,
-      category: info.category,
-      interactions: info.count,
-      lastInteraction: info.lastTs > 0 ? formatDate(info.lastTs) : null,
-    })
-  );
-
-  // Protocols
-  const addrLower = address.toLowerCase();
-  const protocolInteractions = new Map<
-    string,
-    { count: number; first: number; last: number }
-  >();
-
-  for (const tx of rawTxs) {
-    const target = (tx.to || tx.contractAddress || "").toLowerCase();
-    for (const protocol of ARC_PROTOCOLS) {
-      if (protocol.contracts.some((c) => c.toLowerCase() === target)) {
-        const existing = protocolInteractions.get(protocol.id);
-        const ts = Number(tx.timeStamp);
+      // Unique contracts — only count `to` addresses where `is_contract` is true
+      const contractMap = new Map<
+        string,
+        { name: string | null; interactions: number; lastTs: string }
+      >();
+      for (const tx of rawTxs) {
+        const toAddr = tx.to?.hash?.toLowerCase();
+        if (!toAddr) continue;
+        if (!tx.to?.is_contract) continue; // skip wallet-to-wallet transfers
+        const existing = contractMap.get(toAddr);
         if (existing) {
-          existing.count++;
-          if (ts < existing.first) existing.first = ts;
-          if (ts > existing.last) existing.last = ts;
+          existing.interactions++;
+          if (tx.timestamp > existing.lastTs) existing.lastTs = tx.timestamp;
         } else {
-          protocolInteractions.set(protocol.id, { count: 1, first: ts, last: ts });
+          contractMap.set(toAddr, {
+            name: tx.to?.name ?? null,
+            interactions: 1,
+            lastTs: tx.timestamp,
+          });
         }
       }
+
+      const contracts: ContractRecord[] = Array.from(contractMap.entries()).map(
+        ([addr, info]) => ({
+          address: addr,
+          name: info.name,
+          category: null,
+          interactions: info.interactions,
+          lastInteraction: info.lastTs,
+        })
+      );
+
+      // NFT records
+      const nfts: NftRecord[] = [];
+      for (const [txHash, transfers] of nftTransferMap.entries()) {
+        for (const t of transfers) {
+          nfts.push({
+            contractAddress: t.token.address,
+            collectionName: t.token.name ?? null,
+            tokenId: t.total?.token_id ?? null,
+            eventType:
+              t.from?.hash?.toLowerCase() === addrLower
+                ? "Transfer Out"
+                : t.from?.hash?.toLowerCase() ===
+                  "0x0000000000000000000000000000000000000000"
+                ? "Mint"
+                : "Transfer In",
+            date: t.timestamp,
+            transactionHash: txHash,
+          });
+        }
+      }
+
+      // Weekly activity chart
+      const weeklyMap = new Map<string, number>();
+      for (const tx of rawTxs) {
+        const w = isoWeek(tx.timestamp);
+        weeklyMap.set(w, (weeklyMap.get(w) ?? 0) + 1);
+      }
+      const weeklyActivity: WeeklyActivity[] = Array.from(weeklyMap.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([week, count]) => ({ week, count }));
+
+      // First / last activity (rawTxs sorted newest-first by Blockscout default)
+      const timestamps = rawTxs.map((t) => t.timestamp).filter(Boolean);
+      const firstActivity = timestamps.length
+        ? timestamps[timestamps.length - 1]
+        : null;
+      const lastActivity = timestamps.length ? timestamps[0] : null;
+
+      // Protocols
+      const protocolInteractions = new Map<
+        string,
+        { count: number; first: string; last: string }
+      >();
+      for (const tx of rawTxs) {
+        const toAddr = (tx.to?.hash ?? "").toLowerCase();
+        for (const protocol of ARC_PROTOCOLS) {
+          if (protocol.contracts.some((c) => c.toLowerCase() === toAddr)) {
+            const existing = protocolInteractions.get(protocol.id);
+            if (existing) {
+              existing.count++;
+              if (tx.timestamp < existing.first) existing.first = tx.timestamp;
+              if (tx.timestamp > existing.last) existing.last = tx.timestamp;
+            } else {
+              protocolInteractions.set(protocol.id, {
+                count: 1,
+                first: tx.timestamp,
+                last: tx.timestamp,
+              });
+            }
+          }
+        }
+      }
+
+      const protocols: ProtocolRecord[] = ARC_PROTOCOLS.filter((p) =>
+        protocolInteractions.has(p.id)
+      ).map((p) => {
+        const info = protocolInteractions.get(p.id)!;
+        return {
+          id: p.id,
+          name: p.name,
+          category: p.category,
+          interactions: info.count,
+          firstInteraction: info.first,
+          lastInteraction: info.last,
+          website: p.website ?? null,
+        };
+      });
+
+      // Score inputs
+      const hasDefiSwap = ARC_PROTOCOLS.filter((p) => p.category === "swap").some(
+        (p) => protocolInteractions.has(p.id)
+      );
+      const hasDefiBridge = ARC_PROTOCOLS.filter((p) => p.category === "bridge").some(
+        (p) => protocolInteractions.has(p.id)
+      );
+      const hasDefiLiquidity = ARC_PROTOCOLS.filter(
+        (p) => p.category === "liquidity" || p.category === "staking"
+      ).some((p) => protocolInteractions.has(p.id));
+
+      const hasNftMint = nfts.some((n) => n.eventType === "Mint");
+      const hasNftTransfer = nfts.length > 0;
+      const nftContractAddresses = new Set(
+        nfts.map((n) => n.contractAddress.toLowerCase())
+      );
+
+      const arcLaunchTs = env("ARC_LAUNCH_TIMESTAMP");
+      const arcLaunchDate = arcLaunchTs ? new Date(Number(arcLaunchTs) * 1000) : null;
+
+      const scored = calculateScore({
+        totalTransactions: rawTxs.length,
+        activeDays: daySet.size,
+        uniqueContracts: contractMap.size,
+        hasDefiSwap,
+        hasDefiBridge,
+        hasDefiLiquidity,
+        hasNftMint,
+        hasNftTransfer,
+        nftContractCount: nftContractAddresses.size,
+        firstActivityDate: firstActivity ? new Date(firstActivity) : null,
+        activeWeeks: weekSet.size,
+        arcLaunchDate,
+      });
+
+      return {
+        address,
+        network: networkName,
+        dataMode: "full",
+        totalTransactions: rawTxs.length,
+        activeDays: daySet.size,
+        uniqueContracts: contractMap.size,
+        firstActivity,
+        lastActivity,
+        projectsFound: protocols.length,
+        totalTrackedProjects: ARC_PROTOCOLS.length,
+        arcScore: scored.arcScore,
+        scoreLabel: scored.scoreLabel,
+        scoreBreakdown: scored.scoreBreakdown,
+        scamReports: null,
+        transactions,
+        contracts,
+        protocols,
+        nfts,
+        weeklyActivity,
+        error: null,
+      };
+    } catch (err) {
+      logger.error({ err }, "ArcScan API fetch error");
+      // Try RPC fallback if available
+      if (rpcUrl) {
+        try {
+          const rpcData = await rpcFallback(rpcUrl, address);
+          return emptyResult(
+            address,
+            networkName,
+            "partial",
+            `Partial data available. Full wallet history could not be retrieved from ArcScan.`
+          );
+        } catch {
+          /* fall through */
+        }
+      }
+      return emptyResult(
+        address,
+        networkName,
+        "unavailable",
+        "Unable to fetch Arc explorer data right now. Please try again later."
+      );
     }
   }
 
-  const protocols: ProtocolRecord[] = ARC_PROTOCOLS.filter((p) =>
-    protocolInteractions.has(p.id)
-  ).map((p) => {
-    const info = protocolInteractions.get(p.id)!;
-    return {
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      interactions: info.count,
-      firstInteraction: formatDate(info.first),
-      lastInteraction: formatDate(info.last),
-      website: p.website ?? null,
-    };
-  });
-
-  // NFTs
-  const nfts: NftRecord[] = rawNftTxs.map((tx) => ({
-    contractAddress: tx.contractAddress,
-    collectionName: tx.tokenName || null,
-    tokenId: tx.tokenID || null,
-    eventType: tx.from.toLowerCase() === addrLower ? "Transfer Out" : "Transfer In / Mint",
-    date: formatDate(tx.timeStamp),
-    transactionHash: tx.hash,
-  }));
-
-  // Weekly activity chart data
-  const weeklyMap = new Map<string, number>();
-  for (const tx of rawTxs) {
-    const d = new Date(Number(tx.timeStamp) * 1000);
-    const weekKey = isoWeek(d.toISOString());
-    weeklyMap.set(weekKey, (weeklyMap.get(weekKey) ?? 0) + 1);
+  // -------------------------------------------------------------------------
+  // RPC only (no explorer API configured)
+  // -------------------------------------------------------------------------
+  if (rpcUrl) {
+    try {
+      const rpcData = await rpcFallback(rpcUrl, address);
+      return emptyResult(
+        address,
+        networkName,
+        "partial",
+        "Partial data available. Full wallet history could not be retrieved from the current data source."
+      );
+    } catch {
+      return emptyResult(
+        address,
+        networkName,
+        "unavailable",
+        "Unable to fetch Arc explorer data right now. Please try again later."
+      );
+    }
   }
-  const weeklyActivity: WeeklyActivity[] = Array.from(weeklyMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([week, count]) => ({ week, count }));
 
-  // First / last activity
-  const timestamps = rawTxs.map((t) => Number(t.timeStamp)).filter(Boolean);
-  const firstTs = timestamps.length > 0 ? Math.min(...timestamps) : null;
-  const lastTs = timestamps.length > 0 ? Math.max(...timestamps) : null;
-
-  // Score inputs
-  const hasDefiSwap = ARC_PROTOCOLS.filter((p) => p.category === "swap").some(
-    (p) => protocolInteractions.has(p.id)
-  );
-  const hasDefiBridge = ARC_PROTOCOLS.filter((p) => p.category === "bridge").some(
-    (p) => protocolInteractions.has(p.id)
-  );
-  const hasDefiLiquidity = ARC_PROTOCOLS.filter(
-    (p) => p.category === "liquidity" || p.category === "staking"
-  ).some((p) => protocolInteractions.has(p.id));
-
-  const hasNftMint = rawNftTxs.some(
-    (t) => t.from.toLowerCase() === "0x0000000000000000000000000000000000000000"
-  );
-  const hasNftTransfer = rawNftTxs.length > 0;
-  const nftContractAddresses = new Set(rawNftTxs.map((t) => t.contractAddress.toLowerCase()));
-
-  // Arc launch date from env (optional)
-  const arcLaunchTs = env("ARC_LAUNCH_TIMESTAMP");
-  const arcLaunchDate = arcLaunchTs ? new Date(Number(arcLaunchTs) * 1000) : null;
-
-  const scored =
-    dataMode === "full"
-      ? calculateScore({
-          totalTransactions: rawTxs.length,
-          activeDays: daySet.size,
-          uniqueContracts: contractMap.size,
-          hasDefiSwap,
-          hasDefiBridge,
-          hasDefiLiquidity,
-          hasNftMint,
-          hasNftTransfer,
-          nftContractCount: nftContractAddresses.size,
-          firstActivityDate: firstTs ? new Date(firstTs * 1000) : null,
-          activeWeeks: weekSet.size,
-          arcLaunchDate,
-        })
-      : { arcScore: null, scoreLabel: null, scoreBreakdown: null };
-
-  return {
-    address,
-    network: networkName,
-    dataMode,
-    totalTransactions: rawTxs.length,
-    activeDays: daySet.size,
-    uniqueContracts: contractMap.size,
-    firstActivity: firstTs ? formatDate(firstTs) : null,
-    lastActivity: lastTs ? formatDate(lastTs) : null,
-    projectsFound: protocols.length,
-    totalTrackedProjects: ARC_PROTOCOLS.length,
-    arcScore: scored.arcScore,
-    scoreLabel: scored.scoreLabel,
-    scoreBreakdown: scored.scoreBreakdown,
-    scamReports: null, // No verified scam-report source configured
-    transactions,
-    contracts,
-    protocols,
-    nfts,
-    weeklyActivity,
-    error: fetchError,
-  };
+  return emptyResult(address, networkName, "unavailable", "Arc data source is not configured yet.");
 }
