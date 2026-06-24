@@ -11,20 +11,28 @@ router.get("/check", async (req, res) => {
   const address = req.query["address"];
 
   if (typeof address !== "string" || !address.trim()) {
-    res.status(400).json({ error: "Please enter a valid EVM wallet address." });
+    res.status(400).json({
+      error: "Please enter a valid EVM wallet address.",
+    });
     return;
   }
 
   const normalized = address.trim();
 
   if (!isAddress(normalized)) {
-    res.status(400).json({ error: "Please enter a valid EVM wallet address." });
+    res.status(400).json({
+      error: "Please enter a valid EVM wallet address.",
+    });
     return;
   }
 
+  const forwardedFor = req.headers["x-forwarded-for"];
+
   const ip =
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
-    req.socket?.remoteAddress ??
+    (typeof forwardedFor === "string"
+      ? forwardedFor.split(",")[0]?.trim()
+      : undefined) ??
+    req.socket.remoteAddress ??
     "unknown";
 
   const rateResult = checkRateLimit(ip);
@@ -56,11 +64,15 @@ router.get("/check", async (req, res) => {
     res.setHeader("X-Cache", "MISS");
     res.json(result);
   } catch (err: unknown) {
-    const e = err as Error & { code?: string };
-    logger.warn({ err: e }, "Arc fetch error");
+    const error = err as Error & { code?: string };
 
-    if (e.code === "INVALID_ADDRESS") {
-      res.status(400).json({ error: e.message, code: "INVALID_ADDRESS" });
+    logger.warn({ err: error }, "Arc fetch error");
+
+    if (error.code === "INVALID_ADDRESS") {
+      res.status(400).json({
+        error: error.message,
+        code: "INVALID_ADDRESS",
+      });
       return;
     }
 
