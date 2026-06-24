@@ -3,13 +3,15 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Arc Activity Checker API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: arc
+    description: Arc blockchain activity operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,44 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /check:
+    get:
+      operationId: checkWallet
+      tags: [arc]
+      summary: Check wallet activity on Arc Testnet
+      description: Fetches public on-chain activity for a given EVM wallet address on Arc Testnet
+      parameters:
+        - name: address
+          in: query
+          required: true
+          schema:
+            type: string
+          description: EVM wallet address (0x...)
+      responses:
+        "200":
+          description: Wallet activity data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletActivity"
+        "400":
+          description: Invalid address or bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "503":
+          description: Arc data source unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +73,231 @@ components:
           type: string
       required:
         - status
-
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required:
+        - error
+    ScoreBreakdown:
+      type: object
+      properties:
+        transactions:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        activeDays:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        contracts:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        defi:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        nft:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        earlyActivity:
+          type: object
+          properties:
+            score:
+              type: ["integer", "null"]
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+        consistency:
+          type: object
+          properties:
+            score:
+              type: integer
+            max:
+              type: integer
+            label:
+              type: string
+          required: [score, max, label]
+      required: [transactions, activeDays, contracts, defi, nft, earlyActivity, consistency]
+    TransactionRecord:
+      type: object
+      properties:
+        hash:
+          type: string
+        type:
+          type: string
+          enum: ["Contract Interaction", "Native Transfer", "Token Transfer", "NFT Transfer", "Unknown"]
+        from:
+          type: string
+        to:
+          type: ["string", "null"]
+        date:
+          type: string
+        status:
+          type: string
+          enum: ["success", "failed", "pending"]
+        blockNumber:
+          type: string
+      required: [hash, type, from, date, status, blockNumber]
+    ContractRecord:
+      type: object
+      properties:
+        address:
+          type: string
+        name:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        interactions:
+          type: integer
+        lastInteraction:
+          type: ["string", "null"]
+      required: [address, interactions]
+    ProtocolRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        interactions:
+          type: integer
+        firstInteraction:
+          type: ["string", "null"]
+        lastInteraction:
+          type: ["string", "null"]
+        website:
+          type: ["string", "null"]
+      required: [id, name, category, interactions]
+    NftRecord:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+        collectionName:
+          type: ["string", "null"]
+        tokenId:
+          type: ["string", "null"]
+        eventType:
+          type: string
+        date:
+          type: string
+        transactionHash:
+          type: string
+      required: [contractAddress, eventType, date, transactionHash]
+    WeeklyActivity:
+      type: object
+      properties:
+        week:
+          type: string
+        count:
+          type: integer
+      required: [week, count]
+    WalletActivity:
+      type: object
+      properties:
+        address:
+          type: string
+        network:
+          type: string
+        dataMode:
+          type: string
+          enum: ["full", "partial", "unavailable"]
+        totalTransactions:
+          type: integer
+        activeDays:
+          type: integer
+        uniqueContracts:
+          type: integer
+        firstActivity:
+          type: ["string", "null"]
+        lastActivity:
+          type: ["string", "null"]
+        projectsFound:
+          type: integer
+        totalTrackedProjects:
+          type: integer
+        arcScore:
+          type: ["integer", "null"]
+        scoreLabel:
+          type: ["string", "null"]
+        scoreBreakdown:
+          $ref: "#/components/schemas/ScoreBreakdown"
+          nullable: true
+        scamReports:
+          type: ["integer", "null"]
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionRecord"
+        contracts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractRecord"
+        protocols:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProtocolRecord"
+        nfts:
+          type: array
+          items:
+            $ref: "#/components/schemas/NftRecord"
+        weeklyActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/WeeklyActivity"
+        error:
+          type: ["string", "null"]
+      required:
+        - address
+        - network
+        - dataMode
+        - totalTransactions
+        - activeDays
+        - uniqueContracts
+        - projectsFound
+        - totalTrackedProjects
+        - transactions
+        - contracts
+        - protocols
+        - nfts
+        - weeklyActivity
