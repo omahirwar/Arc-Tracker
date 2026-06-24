@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { isAddress } from "viem";
-import { checkRateLimit } from "../lib/rate-limiter";
-import { walletCache } from "../lib/cache";
-import { fetchWalletActivity } from "../lib/arc-fetcher";
-import { logger } from "../lib/logger";
+import { checkRateLimit } from "../lib/rate-limiter.js";
+import { walletCache } from "../lib/cache.js";
+import { fetchWalletActivity } from "../lib/arc-fetcher.js";
+import { logger } from "../lib/logger.js";
 
 const router = Router();
 
@@ -22,13 +22,13 @@ router.get("/check", async (req, res) => {
     return;
   }
 
-  // Rate limiting by IP
   const ip =
     (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ??
     req.socket?.remoteAddress ??
     "unknown";
 
   const rateResult = checkRateLimit(ip);
+
   if (!rateResult.allowed) {
     res.status(429).json({
       error: "Too many requests. Please wait a moment and try again.",
@@ -37,9 +37,9 @@ router.get("/check", async (req, res) => {
     return;
   }
 
-  // Cache lookup
   const cacheKey = normalized.toLowerCase();
   const cached = walletCache.get(cacheKey);
+
   if (cached) {
     res.setHeader("X-Cache", "HIT");
     res.json(cached);
@@ -49,7 +49,6 @@ router.get("/check", async (req, res) => {
   try {
     const result = await fetchWalletActivity(normalized);
 
-    // Only cache full/partial successful responses
     if (result.dataMode !== "unavailable") {
       walletCache.set(cacheKey, result);
     }
