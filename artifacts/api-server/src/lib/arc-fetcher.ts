@@ -474,16 +474,14 @@ export async function fetchWalletActivity(
         };
       });
 
-      // Score inputs
-      const hasDefiSwap = ARC_PROTOCOLS.filter((p) => p.category === "swap").some(
-        (p) => protocolInteractions.has(p.id)
-      );
-      const hasDefiBridge = ARC_PROTOCOLS.filter((p) => p.category === "bridge").some(
-        (p) => protocolInteractions.has(p.id)
-      );
-      const hasDefiLiquidity = ARC_PROTOCOLS.filter(
-        (p) => p.category === "liquidity" || p.category === "staking"
-      ).some((p) => protocolInteractions.has(p.id));
+      // Contract interaction count — txs where to is a contract AND raw_input has calldata
+      const contractInteractionCount = rawTxs.filter(
+        (tx) =>
+          tx.to?.is_contract &&
+          tx.raw_input &&
+          tx.raw_input !== "0x" &&
+          tx.raw_input.length > 2
+      ).length;
 
       const hasNftMint = nfts.some((n) => n.eventType === "Mint");
       const hasNftTransfer = nfts.length > 0;
@@ -498,9 +496,7 @@ export async function fetchWalletActivity(
         totalTransactions: rawTxs.length,
         activeDays: daySet.size,
         uniqueContracts: contractMap.size,
-        hasDefiSwap,
-        hasDefiBridge,
-        hasDefiLiquidity,
+        contractInteractionCount,
         hasNftMint,
         hasNftTransfer,
         nftContractCount: nftContractAddresses.size,
