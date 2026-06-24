@@ -4,10 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-// Replit me PORT milta hai, Vercel me nahi — isliye fallback 3000
 const port = Number(process.env.PORT || 3000);
-
-// Replit me BASE_PATH milta hai, Vercel me nahi — isliye root path
 const basePath = process.env.BASE_PATH || "/";
 
 export default defineConfig({
